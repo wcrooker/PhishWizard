@@ -1,4 +1,4 @@
-# === Modernized Postfix + OpenDKIM Playbook ===
+# Source inspiration: https://github.com/mantvydasb/Red-Team-Infrastructure-Automation/blob/master/phishing-rdr.tf
 
 - name: "Postfix: Copy postfix config file to /etc/postfix/master.cf"
   become: yes
@@ -12,41 +12,11 @@
     src: "header_checks"
     dest: "/etc/postfix/header_checks"
 
-- name: "Postfix: Configure base postfix settings"
+- name: "Postfix: Configure postfix"
   become: yes
   ansible.builtin.command: "postconf -e {{ item.key }}={{ item.value }}"
   loop: "{{ lookup('dict', postfix_config) }}"
-  changed_when: false
-
-- name: "Postfix: Modern TLS settings"
-  become: yes
-  ansible.builtin.command: "postconf -e {{ item.key }}={{ item.value }}"
-  loop:
-    - { key: 'smtpd_tls_security_level', value: 'may' }
-    - { key: 'smtp_tls_security_level', value: 'may' }
-    - { key: 'smtpd_tls_auth_only', value: 'yes' }
-    - { key: 'smtpd_tls_protocols', value: '!SSLv2, !SSLv3, !TLSv1, !TLSv1.1' }
-    - { key: 'smtpd_tls_mandatory_protocols', value: '!SSLv2, !SSLv3, !TLSv1, !TLSv1.1' }
-    - { key: 'smtp_tls_protocols', value: '!SSLv2, !SSLv3, !TLSv1, !TLSv1.1' }
-    - { key: 'smtpd_tls_ciphers', value: 'high' }
-    - { key: 'smtpd_tls_mandatory_ciphers', value: 'high' }
-    - { key: 'smtpd_tls_exclude_ciphers', value: 'aNULL, MD5' }
-    - { key: 'smtp_tls_note_starttls_offer', value: 'yes' }
-  changed_when: false
-
-- name: "Postfix: Tighten relay restrictions"
-  become: yes
-  ansible.builtin.command: "postconf -e smtpd_relay_restrictions='permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination'"
-  changed_when: false
-
-- name: "Postfix: Configure milter integration"
-  become: yes
-  ansible.builtin.command: "postconf -e {{ item }}"
-  loop:
-    - "milter_default_action=accept"
-    - "smtpd_milters=unix:/var/run/opendkim/opendkim.sock"
-    - "non_smtpd_milters=unix:/var/run/opendkim/opendkim.sock"
-  changed_when: false
+  changed_when: false # Done always, so no change notification
 
 - name: "Postfix: copy the template for email forwards"
   become: yes
@@ -113,22 +83,13 @@
     line: "*@{{ domain_name }} mail._domainkey.{{ domain_name }}"
     state: present
 
-- name: "OpenDKIM: Use Unix socket"
+- name: "OpenDKIM: Configure /etc/default/opendkim"
   become: yes
   ansible.builtin.lineinfile:
     dest: /etc/default/opendkim
-    regexp: '^SOCKET='
-    line: 'SOCKET="local:/var/run/opendkim/opendkim.sock"'
     create: yes
-
-- name: "Ensure /var/spool/postfix/var/run/opendkim exists"
-  become: yes
-  ansible.builtin.file:
-    path: "/var/spool/postfix/var/run/opendkim"
-    state: directory
-    owner: opendkim
-    group: opendkim
-    mode: '0755'
+    line: "SOCKET=\"inet:12345@localhost\""
+    state: present
 
 - name: "OpenDKIM: Configure /etc/opendkim/TrustedHosts"
   become: yes
@@ -137,7 +98,7 @@
     create: yes
     line: '{{ item }}'
     state: present
-  loop:
+  with_items:
     - "{{ ansible_host }}"
     - "*.{{ domain_name }}"
     - "localhost"
@@ -147,17 +108,17 @@
 - name: "Postfix: Postmap /etc/postfix/header_checks"
   become: yes
   ansible.builtin.command: "postmap /etc/postfix/header_checks"
-  changed_when: false
+  changed_when: false # Done always, so no change notification
 
 - name: "Postfix: Postmap /etc/postfix/virtual"
   become: yes
   ansible.builtin.command: "postmap /etc/postfix/virtual"
-  changed_when: false
+  changed_when: false # Done always, so no change notification
 
 - name: "Postfix: Reload postfix"
   become: yes
   ansible.builtin.command: "postfix reload"
-  changed_when: false
+  changed_when: false # Done always, so no change notification
 
 - name: "Restart Postfix and Opendkim"
   ansible.builtin.service:
@@ -168,7 +129,7 @@
   loop:
     - postfix
     - opendkim
-  changed_when: false
+  changed_when: false # Done always, so no change notification
 
 - name: "OpenDKIM: Load DKIM Configuration"
   become: yes
@@ -176,7 +137,7 @@
     src: /root/dkim.txt
   register: dkim_contents
 
-- name: "SMTP Server: Create a DNS Template (including SPF and DMARC suggestions)"
+- name: "SMTP Server: Create a DNS Template"
   ansible.builtin.template:
     src: dns-config.j2
     dest: "{{ toolkit_directory }}/dns_config_{{ inventory_hostname }}.txt"
@@ -193,3 +154,50 @@
     src: "{{ toolkit_directory }}/dns_config_{{ inventory_hostname }}.txt"
     dest: "{{ export_path }}/dns_configs/"
     flat: yes
+
+- name: "Iptables: Allow inbound submission (587) and smtps (465)"
+  become: yes
+  ansible.builtin.iptables:
+    chain: INPUT
+    destination_port: "{{ item }}"
+    jump: ACCEPT
+    protocol: tcp
+  loop:
+    - 587
+    - 465
+
+- name: "Postfix: Ensure submission service enabled in master.cf"
+  become: yes
+  ansible.builtin.blockinfile:
+    path: /etc/postfix/master.cf
+    block: |
+      submission inet n       -       y       -       -       smtpd
+        -o syslog_name=postfix/submission
+        -o smtpd_tls_security_level=encrypt
+        -o smtpd_sasl_auth_enable=yes
+        -o smtpd_recipient_restrictions=permit_sasl_authenticated,reject
+        -o milter_macro_daemon_name=ORIGINATING
+
+- name: "Postfix: Ensure smtps service enabled in master.cf"
+  become: yes
+  ansible.builtin.blockinfile:
+    path: /etc/postfix/master.cf
+    block: |
+      smtps inet n       -       y       -       -       smtpd
+        -o syslog_name=postfix/smtps
+        -o smtpd_tls_wrappermode=yes
+        -o smtpd_sasl_auth_enable=yes
+        -o milter_macro_daemon_name=ORIGINATING
+
+- name: "Postfix: Force IPv4-only operation to avoid IPv6 mynetworks and DNS issues"
+  become: yes
+  ansible.builtin.command: >
+    postconf -e inet_protocols=ipv4
+  changed_when: false
+
+- name: "Postfix: Restart postfix after setting inet_protocols"
+  become: yes
+  ansible.builtin.service:
+    name: postfix
+    state: restarted
+  changed_when: false

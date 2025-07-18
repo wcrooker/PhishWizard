@@ -39,7 +39,7 @@
       - iptables
       - iptables-persistent
       - tcpdump
-      - netcat
+      - netcat-openbsd
       - dnsutils
       - ipset
       - net-tools

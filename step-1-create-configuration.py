@@ -11,7 +11,7 @@ import sys
 import logging
 import string
 import random
-import crypt
+from passlib.hash import sha512_crypt
 from colorama import Fore, Style
 
 import validators.email
@@ -283,12 +283,8 @@ def prepare_users(users, options, conf_dir):
                 username=data['username']
             )
         if data['pwhash'] == "XXX":
-            data['pwhash'] = crypt.crypt(
-                getpass.getpass(
-                    f"Please enter a password for user {user}: "
-                ),
-                crypt.mksalt(crypt.METHOD_SHA512)
-            )
+            password = getpass.getpass(f"Please enter a password for user {user}: ")
+            data['pwhash'] = sha512_crypt.hash(password)
         out_users[user] = data
 
     return out_users

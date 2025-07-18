@@ -29,7 +29,7 @@
        - tcpdump
        - python3-pexpect
        - python3-click
-       - netcat
+       - netcat-openbsd
        - dnsutils
        - python3-pip
        - ipset
