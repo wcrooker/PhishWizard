@@ -1,32 +1,35 @@
-#- name: Ensure localisation files for '{{ config_system_locale }}' are available
-#  locale_gen:
-#    name: "{{ config_system_locale }}"
-#    state: present
-#
-#- name: Ensure language files for '{{ config_system_language }}' are available
-#  locale_gen:
-#    name: "{{ config_system_language }}"
-#    state: present
-#
-#- name: Get current locale and language configuration
-#  command: localectl status
-#  register: locale_status
-#  changed_when: false
-#
-#- name: Parse 'LANG' from current locale and language configuration
-#  set_fact:
-#    locale_lang: "{{ locale_status.stdout | regex_search('LANG=([^\n]+)', '\\1') | first }}"
-#
-#- name: Parse 'LANGUAGE' from current locale and language configuration
-#  set_fact:
-#    locale_language: "{{ locale_status.stdout | regex_search('LANGUAGE=([^\n]+)', '\\1') | default([locale_lang], true) | first }}"
-#
-#- name: Configure locale to '{{ config_system_locale }}' and language to '{{ config_system_language }}'
-#  become: yes
-#  command: localectl set-locale LANG={{ config_system_locale }} LANGUAGE={{ config_system_language }}
-#  changed_when: locale_lang != config_system_locale or locale_language != config_system_language
+---
 
-- name: "APT: Uninstall exim if present on the system"
+# OPTIONAL: Uncomment if you want locale/language setup (modernized form):
+# - name: "Ensure locale {{ config_system_locale }} is available"
+#   become: yes
+#   ansible.builtin.locale_gen:
+#     name: "{{ config_system_locale }}"
+#     state: present
+
+# - name: "Ensure language {{ config_system_language }} is available"
+#   become: yes
+#   ansible.builtin.locale_gen:
+#     name: "{{ config_system_language }}"
+#     state: present
+
+# - name: "Set system locale and language"
+#   become: yes
+#   ansible.builtin.command:
+#     cmd: "localectl set-locale LANG={{ config_system_locale }} LANGUAGE={{ config_system_language }}"
+#   when: config_system_locale is defined and config_system_language is defined
+
+# ===================
+# Base OS hardening / prep
+# ===================
+
+- name: "APT: Ensure package cache is up-to-date"
+  become: yes
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: "APT: Purge Exim MTA if present (remove potential conflicts)"
   become: yes
   ansible.builtin.apt:
     name:
@@ -35,13 +38,14 @@
       - exim4-config
       - exim4-daemon-light
     state: absent
-    update_cache: true
+    purge: yes
 
-- name: "APT: Install Git and mailserver packages"
+- name: "APT: Install essential tools and modern mail stack"
   become: yes
   ansible.builtin.apt:
     name:
       - python3
+      - python3-pip
       - git
       - dovecot-imapd
       - dovecot-lmtpd
@@ -53,12 +57,62 @@
       - opendmarc
       - mailutils
       - certbot
+      - iptables-persistent  # Ensure firewall persistence on Debian-family
     state: present
-    update_cache: true
+    install_recommends: no
+    update_cache: yes
 
-- name: "Hostname: Add {{ domain_name }} to /etc/hosts"
+- name: "Ensure essential utilities for modern ops/security"
+  become: yes
+  ansible.builtin.apt:
+    name:
+      - vim
+      - curl
+      - htop
+      - net-tools
+    state: present
+
+- name: "Hostname: Ensure /etc/hosts includes {{ domain_name }}"
   become: yes
   ansible.builtin.lineinfile:
     dest: /etc/hosts
+    regexp: '^127\.0\.0\.1\s+localhost'
     line: "127.0.0.1 localhost {{ domain_name }}"
     state: present
+
+# ===================
+# Recommended hardening tweaks (optional modern best practice)
+# ===================
+
+- name: "Disable IPv6 if not needed (optional but common for infra isolation)"
+  become: yes
+  ansible.builtin.sysctl:
+    name: net.ipv6.conf.all.disable_ipv6
+    value: "1"
+    state: present
+    sysctl_set: yes
+    reload: yes
+
+- name: "Ensure hostname is set properly (optional baseline)"
+  become: yes
+  ansible.builtin.hostname:
+    name: "{{ domain_name }}"
+  when: domain_name is defined
+
+# ===================
+# Optional modernization hint:
+# ===================
+# Add unattended-upgrades for automatic security patching
+- name: "Enable unattended-upgrades (optional best practice)"
+  become: yes
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+
+- name: "Ensure unattended-upgrades service is enabled and running"
+  become: yes
+  ansible.builtin.service:
+    name: unattended-upgrades
+    enabled: true
+    state: started
+

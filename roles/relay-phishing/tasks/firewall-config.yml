@@ -1,5 +1,52 @@
 ---
-- name: "Iptables: Allow Mail Server Traffic outbound"
+
+# Ensure iptables-persistent is installed for persistence (optional but recommended)
+- name: "Install iptables-persistent"
+  become: yes
+  ansible.builtin.apt:
+    name: iptables-persistent
+    state: present
+    install_recommends: no
+  when: ansible_facts['os_family'] == 'Debian'
+
+# Accept established/related inbound traffic (best practice baseline)
+- name: "Iptables: Accept established and related inbound traffic"
+  become: yes
+  ansible.builtin.iptables:
+    chain: INPUT
+    ctstate: RELATED,ESTABLISHED
+    jump: ACCEPT
+
+# Accept all traffic on loopback (best practice)
+- name: "Iptables: Accept all traffic on loopback"
+  become: yes
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: lo
+    jump: ACCEPT
+
+# Allow inbound SMTP on external interface
+- name: "Iptables: Allow inbound SMTP (port 25) on external interface"
+  become: yes
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: "{{ ansible_default_ipv4.interface }}"
+    destination_port: 25
+    jump: ACCEPT
+    protocol: tcp
+
+# Allow inbound SMTP (port 25) on tun0 (OpenVPN)
+- name: "Iptables: Allow inbound SMTP on tun0 (VPN)"
+  become: yes
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: tun0
+    destination_port: 25
+    jump: ACCEPT
+    protocol: tcp
+
+# Allow outbound mail-related traffic
+- name: "Iptables: Allow outbound mail-related ports"
   become: yes
   ansible.builtin.iptables:
     chain: OUTPUT
@@ -8,30 +55,55 @@
     jump: ACCEPT
     protocol: tcp
   loop:
-    - "25"
-    - "143"
-    - "587"
-    - "993"
+    - 25    # SMTP
+    - 143   # IMAP
+    - 587   # Submission
+    - 993   # IMAPS
 
-- name: "Iptables: Allow inbound SMTP traffic"
+# Explicit allow DNS outbound (optional but typical for mail infra)
+- name: "Iptables: Allow outbound DNS (TCP/UDP port 53)"
   become: yes
   ansible.builtin.iptables:
-    chain: INPUT
-    in_interface: "{{ ansible_default_ipv4.interface }}"
+    chain: OUTPUT
+    out_interface: "{{ ansible_default_ipv4.interface }}"
+    destination_port: 53
+    protocol: "{{ item }}"
+    jump: ACCEPT
+  loop:
+    - tcp
+    - udp
+
+# Allow outbound HTTP/HTTPS for package updates / cert renewal (optional)
+- name: "Iptables: Allow outbound HTTP/HTTPS"
+  become: yes
+  ansible.builtin.iptables:
+    chain: OUTPUT
+    out_interface: "{{ ansible_default_ipv4.interface }}"
     destination_port: "{{ item }}"
-    jump: ACCEPT
     protocol: tcp
+    jump: ACCEPT
   loop:
-    - "25"
+    - 80
+    - 443
 
-
-- name: "Iptables: Allow inbound SMTP OpenVPN traffic"
+# Optional: default deny INPUT policy
+- name: "Iptables: Set default policy for INPUT chain to DROP (optional)"
   become: yes
-  ansible.builtin.iptables:
-    chain: INPUT
-    in_interface: "tun0"
-    destination_port: "25"
-    jump: ACCEPT
-    protocol: tcp
-  loop:
-    - "25"
+  ansible.builtin.command: iptables -P INPUT DROP
+
+# Optional: default deny FORWARD policy
+- name: "Iptables: Set default policy for FORWARD chain to DROP (optional)"
+  become: yes
+  ansible.builtin.command: iptables -P FORWARD DROP
+
+# Optional: default allow OUTPUT policy
+- name: "Iptables: Set default policy for OUTPUT chain to ACCEPT"
+  become: yes
+  ansible.builtin.command: iptables -P OUTPUT ACCEPT
+
+# Save rules for persistence (Debian-family)
+- name: "Persist iptables rules (Debian-family)"
+  become: yes
+  ansible.builtin.command: netfilter-persistent save
+  when: ansible_facts['os_family'] == 'Debian'
+
